@@ -20,6 +20,7 @@ mutable struct Cell <: AbstractAgent
     id::Int
     # (needed by Agentsjl but not abs. necessary)
     pos::NTuple{2,Float64}
+
     dV::Float64
 
 
@@ -66,9 +67,10 @@ end
 nothing
 
 function get_h0(x,nx)
-    normal_xy = (x[2],-x[1])
+    normal_xy = (-x[2],x[1])
     return normal_xy ./ nx
 end
+
 
 function agent_step!(node::Node,model::ABM)
     # first step using current fs 
@@ -84,6 +86,16 @@ function agent_step!(node::Node,model::ABM)
     return node.pos
 end
 
+function circ_fx(f,x)
+    n = length(x)
+    res = Vector(undef,n)
+    for i in 1:(n-1)
+        res[i] = f(x[i],x[i+1])
+    end
+    res[n] = f(x[n],x[1])
+    return res
+end
+
 function agent_step!(cell::Cell, model::ABM)
     # somehow have to calculate dV as 
     # from the node movements
@@ -94,28 +106,19 @@ function agent_step!(cell::Cell, model::ABM)
     nodes = cell.partners
     n = length(nodes)
 
-    x_i = Vector{NTuple{2,Float64}}(undef,n)
-
-    for i in 1:n
-        ci = i%n + 1
-        ni = (i+1)%n + 1
-        display(ci)
-        display(ni)
-        x_i[ni] = nodes[ci].pos .- nodes[ni].pos
-        display(x_i[ni])
-        display("_______")
-    end
+    x_i = circ_fx((n1,n2) -> (n2.pos .- n1.pos),nodes)
 
     nx_i = norm.(x_i)
     dh = cell.dV / sum(nx_i)
 
     h_i = (tup -> get_h0(tup[1],tup[2])).(zip(x_i,nx_i))
+    fh_i = (i -> nx_i[i] .* h_i[i]).(1:n)
+    fh_i = circshift(fh_i,1)
+
+    forces = circ_fx((fh_1,fh_2) -> dh .* (fh_1 .+ fh_2),fh_i)
 
     for i in 1:n
-        ci = i%n + 1
-        ni = (i+1)%n + 1
-        cell.forces[nodes[ni]] = dh .* 
-                        (nx_i[ni] .* h_i[ni] .+ nx_i[ci] .* h_i[ci])
+        cell.forces[nodes[i]] = forces[i]
     end
 
     cell.pos = cell.partners[1].pos
@@ -124,14 +127,8 @@ function agent_step!(cell::Cell, model::ABM)
     return cell.pos
 end
 
-# ### Helper functions
-function interact!(a1::Cell, a2::Cell, model)
-    # add node interaction here
-    # go through all nodes of all matching cells
-    # (maybe we should this more effective.)
-    Nothing
-end
-
+####
+# creating an example
 
 
 space = ContinuousSpace((4,4), spacing = 1.0; periodic = false)
@@ -145,13 +142,12 @@ model = ABM(
 
 
 n1 = Node(-1,(1,1),[])
-n2 = Node(-2,(2,1),[])
-n3 = Node(-3,(1,2),[])
+n2 = Node(-2,(1,2),[])
+n3 = Node(-3,(2,1),[])
 
 c1 = Cell(1,(0,0),0,
             [n1,n2,n3],
             Dict(n1=>(0,0), n2=> (0,0), n3=>(0,0)))
-
 
 
 push!(n1.partners,c1)
@@ -163,12 +159,6 @@ add_agent_pos!( n1,model)
 add_agent_pos!( n2,model)
 add_agent_pos!( n3,model)
 
-
-for i in 1:10
-    display( [p.pos for p in c1.partners] )
-    # model_step! is triggered after every scheduled agent has acted, unless the argument agents_first is false (which then first calls model_step! and then activates the agents).
-    model_step!(model)
-end
 
 [p.pos for p in c1.partners]
 model_step!(model)
