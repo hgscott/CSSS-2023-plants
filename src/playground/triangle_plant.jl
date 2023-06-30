@@ -21,7 +21,7 @@ mutable struct Cell <: AbstractAgent
     # (needed by Agentsjl but not abs. necessary)
     pos::NTuple{2,Float64}
 
-    dV::Float64
+    V::Float64
 
 
     # name partners more meaningfull
@@ -96,20 +96,36 @@ function circ_fx(f,x)
     return res
 end
 
+function calculate_polygon_area(vertices)
+    n = length(vertices)
+    area = 0.0
+
+    for i in 1:n
+        x1, y1 = vertices[i]
+        x2, y2 = vertices[mod(i % n, n) + 1]  # Wrap around to the first vertex
+
+        area += (x1 * y2 - x2 * y1)
+    end
+
+    area /= 2.0
+    return abs(area)
+end
+
 function agent_step!(cell::Cell, model::ABM)
     # somehow have to calculate dV as 
     # from the node movements
     # probably ned a node.d_pos variable
     
-    cell.dV = 3 # 10 # * agent.growthrate * model.hardness
 
     nodes = cell.partners
     n = length(nodes)
+    dV = cell.V - calculate_polygon_area((n -> n.pos).(nodes)) 
+    # 10 # * agent.growthrate * model.hardness
 
     x_i = circ_fx((n1,n2) -> (n2.pos .- n1.pos),nodes)
 
     nx_i = norm.(x_i)
-    dh = cell.dV / sum(nx_i)
+    dh = dV / sum(nx_i)
 
     h_i = (tup -> get_h0(tup[1],tup[2])).(zip(x_i,nx_i))
     fh_i = (i -> nx_i[i] .* h_i[i]).(1:n)
@@ -120,7 +136,6 @@ function agent_step!(cell::Cell, model::ABM)
     for i in 1:n
         cell.forces[nodes[i]] = forces[i]
     end
-
     cell.pos = cell.partners[1].pos
 
 
@@ -145,7 +160,7 @@ n1 = Node(-1,(1,1),[])
 n2 = Node(-2,(1,2),[])
 n3 = Node(-3,(2,1),[])
 
-c1 = Cell(1,(0,0),0,
+c1 = Cell(1,(0,0),1,
             [n1,n2,n3],
             Dict(n1=>(0,0), n2=> (0,0), n3=>(0,0)))
 
@@ -160,17 +175,8 @@ add_agent_pos!( n2,model)
 add_agent_pos!( n3,model)
 
 
-[p.pos for p in c1.partners]
-model_step!(model)
-[p.pos for p in c1.partners]
-
-
-
-
 
 using InteractiveDynamics
-using CairoMakie # choose plotting backend
-CairoMakie.activate!() # hide
 
 function cell_polygon(agent)
     if agent isa Node
@@ -184,15 +190,52 @@ function cell_polygon(agent)
 end
 nothing # hide
 
-# set up some nice colors
-cell_color(b) = RGBf(b.id * 3.14 % 1, 0.2, 0.2)
-nothing # hide
+using GLMakie
+using Makie.Colors
+# animation settings
 
-# and proceed with the animation
-InteractiveDynamics.abmvideo(
-    "cell.mp4", model, agent_step!;
-    am = cell_polygon, ac = cell_color,
-    spf = 10, framerate = 30, frames = 600,
-    title = "Growing plants"
-)
+function get_poly(agent)
+    if agent isa Node
+        return Nothing
+    elseif agent isa Cell
+        abs_coords = [p.pos for p in c1.partners]
+        coords = [ c .- agent.pos for c in abs_coords]
+        coords = [Point2f(c) for c in coords]
+        return Polygon(coords)
+    end
+end
 
+function plot_model(model)
+    cells = [c for c in allagents(model) if c isa Cell]
+    for cell in cells
+        poly!(get_poly(cell), 
+                color = :red, strokecolor = :black, strokewidth = 1)
+    end
+end
+
+
+fig = Figure()
+ax = Axis(fig[1, 1])
+
+nframes = 1000
+framerate = 30
+
+it = range(0, nframes)
+record(fig, "color_animation.mp4", hue_iterator;
+        framerate = framerate) do _
+    plot_model(model)
+    model_step!(model)
+end
+
+
+fig, ax, lineplot = lines(0..10, sin; linewidth=10)
+# animation settings
+nframes = 100
+framerate = 30
+it = range(0, 360, length=nframes)
+
+record(fig, "color_animation.mp4", hue_iterator;
+        framerate = framerate) do hue
+        plot_model(model)
+        model_step!(model)
+end
