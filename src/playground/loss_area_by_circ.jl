@@ -127,7 +127,9 @@ function agent_step!(cell::Cell, model::Model)
 
     nodes = cell.partners
     n = length(nodes)
-    cell.dV = cell.V - calculate_polygon_area((n -> n.pos).(nodes)) 
+    area = calculate_polygon_area((n -> n.pos).(nodes)) 
+
+    cell.dV = cell.V - area
     # 10 # * agent.growthrate * model.hardness
 
     # connecting vector
@@ -147,13 +149,17 @@ function agent_step!(cell::Cell, model::Model)
 
     forces = (f -> f ./ sum(norm.(forces))).(forces)
 
-    # calculating spring force 
-    rel_nx_i =  mean(nx_i)  .- nx_i
+    # calculating spring force
+    a = mean(nx_i) 
+    max_area = n/4 * cot(π/n)
+    min_length = (area / max_area) ^ .5
+
+    rel_nx_i =  min_length  .- nx_i
     spring_forces = (x -> x[1] .* x[2]).(zip(rel_nx_i,x0_i))
     spring_forces = circ_fx((f_prev,f_next) -> (f_prev .- f_next),circshift(spring_forces,1))
     spring_forces = (f -> f ./ sum(norm.(spring_forces))).(spring_forces)
 
-    forces = (x -> (1+cell.dV) .* x[1] .+ x[2]).(zip(forces,spring_forces))
+    forces = (x -> cell.dV .* x[1] .+ 2 .* x[2]).(zip(forces,spring_forces))
 
 
     for i in 1:n
@@ -368,10 +374,10 @@ model = Model(0.01,Set([c1]),Set([n1,n2,n3])) #dt,cells,nodes
 p = plot_model(model)
 display(p)
 
-for i = 1:1000
+for i = 1:5000
     relax!(model)
    # relax_nodes!(model)
-   if i % 20 == 0
+   if i % 500 == 0
         p = plot_model(model)
         xs = [n.pos[1] for n in collect(model.nodes)]
         ys = [n.pos[2] for n in collect(model.nodes)]
@@ -379,8 +385,9 @@ for i = 1:1000
         xlims!( minimum(xs)-1,maximum(xs)+1 )
         ylims!( minimum(ys)-1,maximum(ys)+1 )
         display(p)
+        display([c.dV for c in collect(model.cells)])
    end
-    sleep(.01)
+
 end
 
 cells = collect(model.cells)
@@ -442,26 +449,4 @@ p = Plots.plot()
 for cell in model.cells
     display(length(cell.partners))
     Plots.scatter!(p,[p.pos .+ .1 .* rand(2) for p in cell.partners],alpha = .2)
-end
-
-
-using GeometryBasics
-# Initialize Figure and Axis
-fig = Figure(resolution = (800, 600))
-ax = Axis(fig[1, 1])
-
-# Initialize polygons
-polygon = [Polygon(rand(Point2f, 3)) for _ in 1:10]
-colors = [rand(RGB) for _ in 1:10]
-
-# Plot initial polygons
-plots = [lines!(ax, p, color = c) for (p, c) in zip(polygon, colors)]
-
-# Start recording
-record(fig, "example.mp4", 1:100) do i
-    # Update polygons
-    for j in 1:10
-        polygon[j] = Polygon(rand(Point2f0, 3))
-        plots[j][1] = polygon[j]
-    end
 end
