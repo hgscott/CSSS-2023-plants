@@ -1,5 +1,5 @@
-using LinearAlgebra
-using Random,ModularIndices
+using LinearAlgebra,Statistics
+using Random,ModularIndices,Plots
 
 # both agents need the same number of fields
 # so we cann them both at the same time to the ABModel
@@ -49,12 +49,21 @@ mutable struct Model
 end
 
 function get_cell(id,model::Model)
-    for c in model.cells
-        if c.id == id
-            return c
+    for cell in collect(model.cells)
+        if cell.id == id
+            return cell
         end
     end
     error("Cell-id not in model")
+end
+
+function get_node(id,model::Model)
+    for node in collect(model.nodes)
+        if node.id == id
+            return node
+        end
+    end
+    error("Node-id not in model")
 end
 
 function get_partners(node::Node,model::Model)
@@ -94,7 +103,7 @@ function circ_fx(f,x)
     return res
 end
 
-function calculate_polygon_area(vertices)
+function calculate_polygon_area(vertices::Vector{NTuple{2,Float64}})
     n = length(vertices)
     area = 0.0
 
@@ -113,7 +122,6 @@ function agent_step!(cell::Cell, model::Model)
     # somehow have to calculate dV as 
     # from the node movements
     # probably ned a node.d_pos variable
-    
 
     nodes = cell.partners
     n = length(nodes)
@@ -141,11 +149,16 @@ function agent_step!(cell::Cell, model::Model)
 end
 
 
-
-function split!(i,j,cell,model)
-    if !( length(i) == length(j) == 2 )
-        error("i!=j!=2 when splitting")
+function sync_partners!(cell::Cell,model::Model)
+    for p in cell.partners
+        display(p.id)
+        push!(p.partners,cell.id)
     end
+end
+
+
+
+function split!(i::Tuple{Int,Int},j::Tuple{Int,Int},cell::Cell,model::Model)
     nodes = cell.partners
     n = length(nodes)
 
@@ -202,54 +215,49 @@ function split!(i,j,cell,model)
 
     m_id = maximum([c.id for c in model.cells])
 
-    cell_i = Cell(m_id+1,cell_i_partners[1].pos,2,0,
-                cell_i_partners,
-                Dict(n => (0,0) for n in cell_i_partners))
-    cell_j = Cell(m_id+2,cell_j_partners[1].pos,2,0,
-                cell_i_partners,
-                Dict(n => (0,0) for n in cell_j_partners))
-
-    
-    # still need to change this
-    # such that 
-
-
-    push!(node1.partners,cell_i.id)
-    push!(node2.partners,cell_j.id)
-
+    cell_i = Cell(
+        m_id+1,cell_i_partners[1].pos,2,0,
+                cell_i_partners,Dict())
+    cell_j = Cell(
+        m_id+2,cell_j_partners[1].pos,2,0,
+                cell_j_partners,Dict())
     
     push!(model.cells,cell_i,)
     push!(model.cells,cell_j)
+
+    sync_partners!(cell_i,model)
+    sync_partners!(cell_j,model)
         
     
     for n in nodes
         delete!(n.partners,cell.id)
     end
     delete!(model.cells,cell)
-
-
 end
 
-
-function model_step!(model)
+function relax!(model::Model)
     #goes through all cell agents and updates forces
-
-
     # this can be parallelized
     for c in model.cells
         agent_step!(c,model)
     end
-
     #this as well
     for n in model.nodes
-        display(n.partners)
+        # display(n.partners)
         agent_step!(n,model)
     end
+end
 
+function model_step!(model::Model,splitting::Bool)
 
-    for c in model.cells
-        if c.dV < .001
-            split!((1,2),(2,3),c,model)
+    relax!(model)
+
+    if splitting
+        for c in model.cells
+            if c.dV < .001 && Random.rand(1)[1] < .05
+                # display("splitting")
+                split!((1,2),(2,3),c,model)
+            end
         end
     end
     # however, important 
@@ -266,10 +274,17 @@ nothing
 ####
 # creating an example
 
+function cell_mean(cell::Cell)
+    nodes = cell.partners
+    mean_x = mean([n.pos[1] for n in nodes])
+    mean_y = mean([n.pos[2] for n in nodes])
+    return mean_x,mean_y
+end
+
 
 
 n1 = Node(-1,(1,1),Set(),Dict())
-n2 = Node(-2,(1,2),Set(),Dict())
+n2 = Node(-2,(1,10),Set(),Dict())
 n3 = Node(-3,(2,1),Set(),Dict())
 
 
@@ -282,11 +297,61 @@ push!(n1.partners,c1.id)
 push!(n2.partners,c1.id)
 push!(n3.partners,c1.id)
 
-model = Model(0.01,Set([c1]),Set([n1,n2,n3])) #dt,cells,nodes
+model = Model(0.1,Set([c1]),Set([n1,n2,n3])) #dt,cells,nodes
 
-model_step!(model)
+# model_step!(model)
+function plot_model(model::Model)
+    p = Plots.plot()
 
-split!((1,2),(2,3),c1,model) #(i,j,cell,model)
+    nodes = model.nodes
+    n = length(nodes)
+    nodes_pos = [n.pos for n in nodes]
+    n_x = (n->n[1]).(nodes_pos)
+    n_y = (n->n[2]).(nodes_pos)
+    p = Plots.scatter!(p,n_x,n_y,
+            markersize = 0)
+
+    for n in model.nodes
+        Plots.annotate!(p,n.pos[1],n.pos[2],
+                Plots.text(string(n.id), :black, 20))
+    end
+
+    c_color = :green
+    for c in model.cells
+        Random.seed!(c.id)
+        color = rand(RGB)
+        m = cell_mean(c)
+        Plots.annotate!(p,m[1],m[2],
+            Plots.text(string(c.id),:black, 20))
+        
+        n = length(c.partners)
+        nodes_pos = [n.pos for n in c.partners]
+        n_x = (n->n[1]).(nodes_pos)
+        n_y = (n->n[2]).(nodes_pos)
+        Plots.plot!(p,
+            n_x[Mod(1:(n+1))],n_y[Mod(1:(n+1))],
+            fill = (0, color),)
+    end
+
+    return p
+end
+
+for i = 1:50
+    model_step!(model,false)
+    p = plot_model(model)
+    display(p)
+    sleep(.1)
+end
+
+p = plot_model(model)
+
+cells = collect(model.cells)
+nodes = collect(model.nodes)
+c = cells[1]
+split!((1,2),(2,3),c,model)
+
+model.nodes
+# split!((1,2),(2,3),c1,model) #(i,j,cell,model)
 
 
 using InteractiveDynamics
@@ -307,19 +372,15 @@ using GLMakie
 using Makie.Colors
 # animation settings
 
-function get_poly(agent)
-    if agent isa Node
-        return Nothing
-    elseif agent isa Cell
-        coords = [Point2f(p.pos) for p in c1.partners]
-        return Polygon(coords)
-    end
+function get_poly(cell)
+    coords = [Point2f(p.pos) for p in cell.partners]
+    return Polygon(coords)
 end
 
 function plot_model(model)
     for cell in model.cells
-        poly!(get_poly(cell), 
-                color = :red, strokecolor = :black, strokewidth = 1)
+        poly!(get_poly(cell), strokecolor = :black, strokewidth = 5,
+                transparency = true)
     end
 end
 
@@ -327,12 +388,41 @@ end
 fig = Figure()
 ax = Axis(fig[1, 1])
 
-nframes = 1000
-framerate = 30
+nframes = 100
+framerate = 5
 it = range(0, nframes)
 
 record(fig, "color_animation.mp4", it;
         framerate = framerate) do _
+
     plot_model(model)
     model_step!(model)
+end
+
+p = Plots.plot()
+for cell in model.cells
+    display(length(cell.partners))
+    Plots.scatter!(p,[p.pos .+ .1 .* rand(2) for p in cell.partners],alpha = .2)
+end
+
+
+using GeometryBasics
+# Initialize Figure and Axis
+fig = Figure(resolution = (800, 600))
+ax = Axis(fig[1, 1])
+
+# Initialize polygons
+polygon = [Polygon(rand(Point2f, 3)) for _ in 1:10]
+colors = [rand(RGB) for _ in 1:10]
+
+# Plot initial polygons
+plots = [lines!(ax, p, color = c) for (p, c) in zip(polygon, colors)]
+
+# Start recording
+record(fig, "example.mp4", 1:100) do i
+    # Update polygons
+    for j in 1:10
+        polygon[j] = Polygon(rand(Point2f0, 3))
+        plots[j][1] = polygon[j]
+    end
 end
