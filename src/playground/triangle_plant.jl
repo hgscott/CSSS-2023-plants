@@ -1,6 +1,5 @@
 using Agents, LinearAlgebra
-using Random
-
+using Random,ModularIndices
 
 # both agents need the same number of fields
 # so we cann them both at the same time to the ABModel
@@ -12,7 +11,7 @@ mutable struct Node <: AbstractAgent
     id::Int
     # :node
     pos::NTuple{2,Float64}
-    partners::Vector{AbstractAgent} 
+    partners::Set{AbstractAgent} 
     # this should be Cells
 end
 
@@ -22,10 +21,11 @@ mutable struct Cell <: AbstractAgent
     pos::NTuple{2,Float64}
 
     V::Float64
+    dV::Float64
 
 
     # name partners more meaningfull
-    partners::Vector{AbstractAgent}
+    partners::Vector{Node}
     forces::Dict{AbstractAgent,NTuple{2,Float64}}
     # this should be Nodes
     # both because partners are ordered (in clock direction )
@@ -39,32 +39,6 @@ end
 # maybe add function which adds adds a cell, then adds the nodes
 # then pushes the nodes as partners to the cell and vice-versa
 
-
-function model_step!(model)
-    #goes through all cell agents and updates forces
-    cells = [c for c in allagents(model) if c isa Cell]
-    nodes = [n for n in allagents(model) if n isa Node]
-
-    # this can be parallelized
-    for c in cells
-        agent_step!(c,model)
-    end
-
-    #this as well
-    for n in nodes
-        agent_step!(n,model)
-    end
-    # however, important 
-    # all cells then all nodes 
-    # or vice versa but NOT: cell1,node1,cell2,node2,node3,....
-
-    # than we need something which goes through all nodes and moves them
-    # according to the force
-    # Q: HOW do we come up with a Vector of all Nodes.
-    # ? Maybe a global Vector (can we change it then?)
-    # ...Mutability? has to be updated after a split
-end
-nothing
 
 function get_h0(x,nx)
     normal_xy = (-x[2],x[1])
@@ -119,13 +93,13 @@ function agent_step!(cell::Cell, model::ABM)
 
     nodes = cell.partners
     n = length(nodes)
-    dV = cell.V - calculate_polygon_area((n -> n.pos).(nodes)) 
+    cell.dV = cell.V - calculate_polygon_area((n -> n.pos).(nodes)) 
     # 10 # * agent.growthrate * model.hardness
 
     x_i = circ_fx((n1,n2) -> (n2.pos .- n1.pos),nodes)
 
     nx_i = norm.(x_i)
-    dh = dV / sum(nx_i)
+    dh = cell.dV / sum(nx_i)
 
     h_i = (tup -> get_h0(tup[1],tup[2])).(zip(x_i,nx_i))
     fh_i = (i -> nx_i[i] .* h_i[i]).(1:n)
@@ -142,6 +116,112 @@ function agent_step!(cell::Cell, model::ABM)
     return cell.pos
 end
 
+
+
+function split!(i,j,cell,model)
+    nodes = cell.partners
+    n = length(nodes)
+    ii = 1:n 
+
+    function add_node(ij,nodes,model)
+        if length(ij) > 1
+            pos = .5 .* (nodes[ij[1]].pos .+ nodes[ij[2]].pos)
+            n_ids = [n.id for n in allagents(model) if n isa Node]
+            id = minimum(n_ids)-1
+            n = Node(id,pos,Set())
+            add_agent!(n,model)
+            if ij[2] < ij[1]
+                return n,vcat(nodes[1:ij[1]],n,nodes[ij[2]:end])
+            else
+                return n,vcat(nodes,n)
+            end
+        elseif length(ij) == 1
+            n = nodes[ij]
+            return n,nodes
+        end
+    end
+
+    node1,nodes = add_node(i,nodes,model)
+    node2,nodes = add_node(j,nodes,model)
+
+
+    function ci(a,i,j)
+        if i < j
+            return a[i:j]
+        else
+            return vcat(a[i:end],a[1:j])
+        end
+    end
+
+    # if len(i/j) == 1
+    # return node
+    cell_i_partners = ci(nodes,i[end],j[end])
+    cell_j_partners = ci(nodes,j[end],i[1])
+
+    m_id = maximum([c.id for c in allagents(model) if c isa Cell])
+
+    cell_i = Cell(m_id+1,cell_i_partners[1].pos,2,0,
+                cell_i_partners,
+                Dict(n => (0,0) for n in cell_i_partners))
+    cell_j = Cell(m_id+2,cell_j_partners[1].pos,2,0,
+                cell_i_partners,
+                Dict(n => (0,0) for n in cell_j_partners))
+
+    
+    # still need to change this
+    # such that 
+
+
+    push!(node1.partners,cell_i)
+    push!(node2.partners,cell_j)
+
+    
+    add_agent_pos!(cell_i,model)
+    add_agent_pos!(cell_j,model)
+        
+
+    remove_agent!(cell, model)
+
+
+end
+
+
+function model_step!(model)
+    #goes through all cell agents and updates forces
+    cells = [c for c in allagents(model) if c isa Cell]
+    nodes = [n for n in allagents(model) if n isa Node]
+
+    # this can be parallelized
+    for c in cells
+        agent_step!(c,model)
+    end
+
+    #this as well
+    for n in nodes
+        agent_step!(n,model)
+    end
+
+    cell = cells[1]
+    split!(1,(2,3),cell,model)
+
+
+
+    for c in cells
+        if c.dV < .001
+            split!(1,(2,3),c,model)
+        end
+    end
+    # however, important 
+    # all cells then all nodes 
+    # or vice versa but NOT: cell1,node1,cell2,node2,node3,....
+
+    # than we need something which goes through all nodes and moves them
+    # according to the force
+    # Q: HOW do we come up with a Vector of all Nodes.
+    # ? Maybe a global Vector (can we change it then?)
+    # ...Mutability? has to be updated after a split
+end
+nothing
 ####
 # creating an example
 
@@ -156,11 +236,12 @@ model = ABM(
 
 
 
-n1 = Node(-1,(1,1),[])
-n2 = Node(-2,(1,2),[])
-n3 = Node(-3,(2,1),[])
+n1 = Node(-1,(1,1),Set())
+n2 = Node(-2,(1,2),Set())
+n3 = Node(-3,(2,1),Set())
 
-c1 = Cell(1,(0,0),1,
+
+c1 = Cell(1,(0,0),2,0,
             [n1,n2,n3],
             Dict(n1=>(0,0), n2=> (0,0), n3=>(0,0)))
 
@@ -173,7 +254,6 @@ add_agent_pos!( c1,model)
 add_agent_pos!( n1,model)
 add_agent_pos!( n2,model)
 add_agent_pos!( n3,model)
-
 
 
 using InteractiveDynamics
@@ -198,9 +278,7 @@ function get_poly(agent)
     if agent isa Node
         return Nothing
     elseif agent isa Cell
-        abs_coords = [p.pos for p in c1.partners]
-        coords = [ c .- agent.pos for c in abs_coords]
-        coords = [Point2f(c) for c in coords]
+        coords = [Point2f(p.pos) for p in c1.partners]
         return Polygon(coords)
     end
 end
@@ -219,23 +297,10 @@ ax = Axis(fig[1, 1])
 
 nframes = 1000
 framerate = 30
-
 it = range(0, nframes)
-record(fig, "color_animation.mp4", hue_iterator;
+
+record(fig, "color_animation.mp4", it;
         framerate = framerate) do _
     plot_model(model)
     model_step!(model)
-end
-
-
-fig, ax, lineplot = lines(0..10, sin; linewidth=10)
-# animation settings
-nframes = 100
-framerate = 30
-it = range(0, 360, length=nframes)
-
-record(fig, "color_animation.mp4", hue_iterator;
-        framerate = framerate) do hue
-        plot_model(model)
-        model_step!(model)
 end

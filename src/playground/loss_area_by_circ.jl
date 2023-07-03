@@ -117,7 +117,7 @@ function calculate_polygon_area(vertices::Vector{NTuple{2,Float64}})
     end
 
     area /= 2.0
-    return abs(area)
+    return area
 end
 
 function agent_step!(cell::Cell, model::Model)
@@ -127,7 +127,7 @@ function agent_step!(cell::Cell, model::Model)
 
     nodes = cell.partners
     n = length(nodes)
-    area = calculate_polygon_area((n -> n.pos).(nodes)) 
+    area = abs.(calculate_polygon_area((n -> n.pos).(nodes)) )
 
     cell.dV = cell.V - area
     # 10 # * agent.growthrate * model.hardness
@@ -154,12 +154,18 @@ function agent_step!(cell::Cell, model::Model)
     max_area = n/4 * cot(π/n)
     min_length = (area / max_area) ^ .5
 
-    rel_nx_i =  min_length  .- nx_i
+    rel_nx_i =  (min_length  .- nx_i) ./ min_length
     spring_forces = (x -> x[1] .* x[2]).(zip(rel_nx_i,x0_i))
     spring_forces = circ_fx((f_prev,f_next) -> (f_prev .- f_next),circshift(spring_forces,1))
     spring_forces = (f -> f ./ sum(norm.(spring_forces))).(spring_forces)
 
-    forces = (x -> cell.dV .* x[1] .+ 2 .* x[2]).(zip(forces,spring_forces))
+    forces = (x -> sign(cell.dV) * sqrt(abs(cell.dV)) .* x[1] .+ 2 .* x[2]).(zip(forces,spring_forces))
+
+    pos = [n.pos for n in nodes]
+
+    areas = (p -> calculate_polygon_area([p[1],p[2],p[3]]) ).(
+        zip(pos,circshift(pos,1),circshift(pos,2))
+    )
 
 
     for i in 1:n
@@ -174,7 +180,6 @@ end
 
 function sync_partners!(cell::Cell,model::Model)
     for p in cell.partners
-        display(p.id)
         push!(p.partners,cell.id)
     end
 end
@@ -187,30 +192,28 @@ function split!(i::Tuple{Int,Int},j::Tuple{Int,Int},
     n = length(nodes)
 
     i_partnercell = intersect(
-                    get_partners(nodes[i[1]],model),
-                    get_partners(nodes[i[2]],model)
+                    get_partners(nodes[Mod(i[1])],model),
+                    get_partners(nodes[Mod(i[2])],model)
                                     )
     j_partnercell = intersect(
-                    get_partners(nodes[j[1]],model),
-                    get_partners(nodes[j[2]],model)
+                    get_partners(nodes[Mod(j[1])],model),
+                    get_partners(nodes[Mod(j[2])],model)
                                     )
 
     delete!(i_partnercell,cell)
     delete!(j_partnercell,cell)
 
-    ii = 1:n
     i,j = sort([j,i])
-    j = j .+ 1
 
     function add_node(ij,nodes,model)
         if length(ij) > 1
-            pos = .5 .* (nodes[ij[1]].pos .+ nodes[ij[2]].pos)
+            pos = .5 .* (nodes[Mod(ij[1])].pos .+ nodes[Mod(ij[2])].pos)
             n_ids = [n.id for n in model.nodes if n isa Node]
             id = minimum(n_ids)-1
             n = Node(id,pos,Set(),Dict())
             push!(model.nodes,n)
             if ij[1] < ij[2]
-                return n,vcat(nodes[1:ij[1]],n,nodes[ij[2]:end])
+                return n,vcat(nodes[Mod(1:ij[1])],n,nodes[Mod(ij[2]:end)])
             else
                 return n,vcat(nodes,n)
             end
@@ -221,6 +224,11 @@ function split!(i::Tuple{Int,Int},j::Tuple{Int,Int},
     end
 
     node1,nodes = add_node(i,nodes,model)
+    if j[2] == 1
+        j = (j[1]+1,j[2])
+    else
+        j = j .+ 1
+    end
     node2,nodes = add_node(j,nodes,model)
 
 
@@ -234,8 +242,9 @@ function split!(i::Tuple{Int,Int},j::Tuple{Int,Int},
 
     # if len(i/j) == 1
     # return node
-    cell_i_partners = ci(nodes,i[end],j[end])
-    cell_j_partners = ci(nodes,j[end],i[end])
+    cell_i_partners = ci(nodes,i[end],j[1]+1)
+    cell_j_partners = ci(nodes,j[1]+1,i[end] )
+
 
     m_id = maximum([c.id for c in model.cells])
 
@@ -246,7 +255,19 @@ function split!(i::Tuple{Int,Int},j::Tuple{Int,Int},
         m_id+2,cell_j_partners[1].pos,2,0,
                 cell_j_partners,Dict())
     
-    push!(model.cells,cell_i,)
+
+    
+    for ci in i_partnercell
+        push!(ci.partners,node1)
+        sync_partners!(ci,model)
+    end
+    for cj in j_partnercell
+        push!(cj.partners,node2)
+        sync_partners!(cj,model)
+    end
+
+
+    push!(model.cells,cell_i)
     push!(model.cells,cell_j)
 
     sync_partners!(cell_i,model)
@@ -258,6 +279,8 @@ function split!(i::Tuple{Int,Int},j::Tuple{Int,Int},
     end
     delete!(model.cells,cell)
 end
+
+
 
 function update_forces!(model::Model)
     for c in model.cells
@@ -326,14 +349,14 @@ function plot_model(model::Model)
     n_x = (n->n[1]).(nodes_pos)
     n_y = (n->n[2]).(nodes_pos)
     p = Plots.scatter!(p,n_x,n_y,
-            markersize = 0)
+            markersize = 3)
 
     for n in model.nodes
         Plots.annotate!(p,n.pos[1],n.pos[2],
                 Plots.text(string(n.id), :black, 20))
     end
 
-    c_color = :green
+    # c_color = :green
     for c in model.cells
         Random.seed!(c.id)
         color = rand(RGB)
@@ -347,7 +370,7 @@ function plot_model(model::Model)
         n_y = (n->n[2]).(nodes_pos)
         Plots.plot!(p,
             n_x[Mod(1:(n+1))],n_y[Mod(1:(n+1))],
-            fill = (0, color),)
+            fill = (0, color))
     end
 
     return p
@@ -357,27 +380,53 @@ end
 
 n1 = Node(-1,(1,1),Set(),Dict())
 n2 = Node(-2,(1,10),Set(),Dict())
-n3 = Node(-3,(1.1,1),Set(),Dict())
+n3 = Node(-3,(2,10),Set(),Dict())
+n4 = Node(-4,(2,1),Set(),Dict())
+
 
 
 c1 = Cell(1,(0,0),2,0,
-            [n1,n2,n3],
-            Dict(n1=>(0,0), n2=> (0,0), n3=>(0,0)))
+            [n1,n2,n3,n4],
+            Dict())
 
 
 push!(n1.partners,c1.id)
 push!(n2.partners,c1.id)
 push!(n3.partners,c1.id)
+push!(n4.partners,c1.id)
 
-model = Model(0.01,Set([c1]),Set([n1,n2,n3])) #dt,cells,nodes
+
+model = Model(0.001,Set([c1]),Set([n1,n2,n3,n4])) #dt,cells,nodes
 
 p = plot_model(model)
 display(p)
+cells = collect(model.cells)
+c = shuffle(cells)[1]
+split!((1,2),(2,3),c,model)
+p = plot_model(model)
+display(p)
+c = get_cell(2,model)
+split!((1,2),(2,3),c,model)
+p = plot_model(model)
+cell = get_cell(5,model)
+split!((1,2),(2,3),cell,model)
+p = plot_model(model)
 
-for i = 1:5000
-    relax!(model)
-   # relax_nodes!(model)
-   if i % 500 == 0
+
+prev_model = deepcopy(model)
+cells = collect(model.cells)
+cell = shuffle(cells)[1]
+n = length(collect(cell.partners))
+edges = collect(zip(circshift(1:n,1),1:n) )
+edges = shuffle(edges)
+e1,e2 = edges[1],edges[2]
+split!(e1,e2,cell,model)
+p = plot_model(model)
+
+
+
+for i = 1:10_000
+    if i % 1000 == 0
         p = plot_model(model)
         xs = [n.pos[1] for n in collect(model.nodes)]
         ys = [n.pos[2] for n in collect(model.nodes)]
@@ -385,15 +434,48 @@ for i = 1:5000
         xlims!( minimum(xs)-1,maximum(xs)+1 )
         ylims!( minimum(ys)-1,maximum(ys)+1 )
         display(p)
-        display([c.dV for c in collect(model.cells)])
-   end
-
+    end
+    relax!(model)
 end
 
-cells = collect(model.cells)
-nodes = collect(model.nodes)
-c = shuffle(cells)[1]
-split!((1,2),(2,3),c,model)
+
+
+
+anim = Animation()
+for i = 1:10_000
+    relax!(model)
+    # relax_nodes!(model)
+    if i % 10 == 0
+        p = plot_model(model)
+        xs = [n.pos[1] for n in collect(model.nodes)]
+        ys = [n.pos[2] for n in collect(model.nodes)]
+
+        xlims!( minimum(xs)-1,maximum(xs)+1 )
+        ylims!( minimum(ys)-1,maximum(ys)+1 )
+
+        frame(anim,p)
+    end
+    if i % 500 == 0
+        display(i)
+        display(p)
+        cells = collect(model.cells)
+        filter!(c -> c.dV < .01,cells)
+        if length(cells) >= 1
+            display("splitting")
+            cell = shuffle(cells)[1]
+            n = length(collect(cell.partners))
+            edges = collect(zip(circshift(1:n,1),1:n) )
+            edges = shuffle(edges)
+            e1,e2 = edges[1],edges[2]
+            split!(e1,e2,cell,model)
+        end
+        display([c.dV for c in collect(model.cells)])
+    end
+end
+
+gif(anim)
+
+
 p = plot_model(model)
 
 model.nodes
@@ -414,39 +496,3 @@ function cell_polygon(agent)
 end
 nothing # hide
 
-using GLMakie
-using Makie.Colors
-# animation settings
-
-function get_poly(cell)
-    coords = [Point2f(p.pos) for p in cell.partners]
-    return Polygon(coords)
-end
-
-function plot_model(model)
-    for cell in model.cells
-        poly!(get_poly(cell), strokecolor = :black, strokewidth = 5,
-                transparency = true)
-    end
-end
-
-
-fig = Figure()
-ax = Axis(fig[1, 1])
-
-nframes = 100
-framerate = 5
-it = range(0, nframes)
-
-record(fig, "color_animation.mp4", it;
-        framerate = framerate) do _
-
-    plot_model(model)
-    model_step!(model)
-end
-
-p = Plots.plot()
-for cell in model.cells
-    display(length(cell.partners))
-    Plots.scatter!(p,[p.pos .+ .1 .* rand(2) for p in cell.partners],alpha = .2)
-end
