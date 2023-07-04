@@ -2,7 +2,7 @@ using Hexagons,Colors,Plots
 
 include("Cell.jl")
 
-model = Model(0.05,Set(),Set())
+model = Model(01,Set(),Set())
 #dt,cells,nodes
 
 p = plot(legend = false)
@@ -31,7 +31,7 @@ for i in 1:40
         else
             id = maximum(ids) + 1
         end
-        cell = Cell(id,(0,0),1 + 7 * j / 4,0,
+        cell = Cell(id,(0,0),1 + 10 * j / 4,0,
         cell_nodes,
         Dict())
         push!(model.cells,cell)
